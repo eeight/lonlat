@@ -1,6 +1,6 @@
 module Coord
     ( Coord(..)
-    , coordToDouble
+    , toDouble
     , coordSucc
     ) where
 
@@ -10,8 +10,8 @@ multiplier = fromIntegral (maxBound :: Int32) / 360
 
 newtype Coord = Coord { unwrapCoord :: Int32 } deriving (Eq, Ord)
 
-coordToDouble :: Coord -> Double
-coordToDouble (Coord i) = (fromIntegral i) / multiplier
+toDouble :: Coord -> Double
+toDouble (Coord i) = (fromIntegral i) / multiplier
 
 coordSucc :: Coord -> Coord
 coordSucc (Coord i)
@@ -19,4 +19,4 @@ coordSucc (Coord i)
     | otherwise = undefined
 
 instance Show Coord where
-    show = show . coordToDouble
+    show = show . toDouble

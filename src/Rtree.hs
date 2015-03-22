@@ -10,14 +10,12 @@ import BoundingBox(BoundingBox(..), Contained(..))
 
 import qualified BoundingBox as B
 
-import Control.Arrow(second)
 import Control.Monad.ST(runST)
 import Data.Int(Int32, Int64)
-import Data.List(minimumBy, zip3)
+import Data.List(minimumBy)
 import Data.Vector((!), (//))
 
 import qualified Data.Vector as V
-import qualified Data.Vector.Mutable as VM
 import qualified Data.Vector.Algorithms.Intro as VI
 
 max_node_fill :: Int
@@ -81,10 +79,10 @@ splits cells = let
 
 chooseSplitAxis :: V.Vector (Cell a) -> V.Vector (Cell a)
 chooseSplitAxis cells = let
-    key f g c = let b = bbox c in
+    mkKey f g c = let b = bbox c in
         (unwrapCoord $ f b, unwrapCoord $ g b)
-    keyX = key min_x max_x
-    keyY = key min_y max_y
+    keyX = mkKey min_x max_x
+    keyY = mkKey min_y max_y
 
     splitMargin (_, lhs, rhs) = margin lhs + margin rhs
     marginForSplits = sum . map splitMargin . splits
