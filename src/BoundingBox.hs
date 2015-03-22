@@ -13,6 +13,9 @@ module BoundingBox
 import Coord
 import Point
 
+import GHC.Generics(Generic)
+import Data.Aeson(ToJSON)
+
 import qualified Data.Vector as V
 
 data BoundingBox = BoundingBox
@@ -20,7 +23,9 @@ data BoundingBox = BoundingBox
     , min_y :: Coord
     , max_x :: Coord
     , max_y :: Coord
-    } deriving (Eq, Show)
+    } deriving (Eq, Generic)
+
+instance ToJSON BoundingBox
 
 intersects :: BoundingBox -> BoundingBox -> Bool
 intersects b1 b2 = minmax max_x min_x && minmax max_y min_y

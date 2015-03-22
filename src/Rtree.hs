@@ -2,6 +2,7 @@ module Rtree
     ( Rtree
     , empty
     , insert
+    , lookup
     ) where
 
 import Coord(Coord(..))
@@ -10,7 +11,9 @@ import BoundingBox(BoundingBox(..), Contained(..))
 
 import qualified BoundingBox as B
 
+import Prelude hiding (lookup)
 import Control.Monad.ST(runST)
+import Data.Aeson(ToJSON(..), (.=), object)
 import Data.Int(Int32, Int64)
 import Data.List(minimumBy)
 import Data.Vector((!), (//))
@@ -34,6 +37,12 @@ data Node p where
     LeafNode :: V.Vector (Cell Leaf) -> Node Leaf
     InnerNode :: V.Vector (Cell Inner) -> Node Inner
 
+instance ToJSON (Cell a) where
+    toJSON (LeafCell p i) = object ["point" .= p, "id" .= i]
+    toJSON (InnerCell b n) = object ["bbox" .= b, "node" .= n]
+
+instance ToJSON (Node a) where
+    toJSON = toJSON . nodeCells
 
 data MaybeNodePair = forall a. MaybeNodePair (Node a) (Maybe (Node a))
 
@@ -57,6 +66,9 @@ data Rtree  = forall p . Rtree BoundingBox (Node p)
 
 instance Contained Rtree where
     bbox (Rtree b _) = b
+
+instance ToJSON Rtree where
+    toJSON (Rtree b root) = object ["bbox" .= b, "root" .= root]
 
 mkInner :: Node a -> Cell Inner
 mkInner c = InnerCell (bbox c) c
@@ -167,3 +179,13 @@ insert (Rtree r_bbox r_root) p i = let
         MaybeNodePair new_root (Just new_root_sibling) ->
             Rtree new_bbox (InnerNode $
                 V.fromList [mkInner new_root, mkInner new_root_sibling])
+
+lookup :: BoundingBox -> Rtree -> [Int32]
+lookup query_bbox (Rtree r_bbox root) = go r_bbox root where
+    go :: BoundingBox -> Node a -> [Int32]
+    go node_bbox node
+        | not (B.intersects query_bbox node_bbox) = []
+        | otherwise = concatMap goCell (V.toList $ nodeCells node)
+    goCell :: Cell a -> [Int32]
+    goCell (LeafCell p i) = if B.contains query_bbox p then [i] else []
+    goCell (InnerCell node_bbox node) = go node_bbox node

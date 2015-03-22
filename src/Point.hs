@@ -2,4 +2,9 @@ module Point(Point(..)) where
 
 import Coord
 
-data Point = Point Coord Coord
+import GHC.Generics(Generic)
+import Data.Aeson(ToJSON)
+
+data Point = Point Coord Coord deriving Generic
+
+instance ToJSON Point
