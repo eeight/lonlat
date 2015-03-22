@@ -153,7 +153,7 @@ chooseSubtree n box = let
     cellMetric k = case cells ! k of
         InnerCell b _ -> metric k b
 
-    in minimumBy (compareOn cellMetric) [0..V.length cells]
+    in minimumBy (compareOn cellMetric) [0..V.length cells - 1]
 
 insertInSubtree :: Node a -> Cell Leaf -> MaybeNodePair
 insertInSubtree n@(LeafNode _) c = insertAt n c
@@ -171,9 +171,10 @@ insertInSubtree n@(InnerNode cs) c = let
 empty :: Rtree
 empty = Rtree B.empty (LeafNode V.empty)
 
-insert :: Rtree -> Point -> Int32 -> Rtree
-insert (Rtree r_bbox r_root) p i = let
-    new_bbox = B.extend r_bbox (bbox p)
+insert :: Point -> Int32 -> Rtree -> Rtree
+insert p i (Rtree r_bbox r_root) = let
+    new_bbox' = B.extend r_bbox (bbox p)
+    new_bbox = new_bbox' `seq` new_bbox'
     in case insertInSubtree r_root (LeafCell p i) of
         MaybeNodePair r Nothing -> Rtree new_bbox r
         MaybeNodePair new_root (Just new_root_sibling) ->
