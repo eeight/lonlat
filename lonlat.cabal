@@ -18,10 +18,14 @@ library
                        Rtree
   build-depends:       base >=4.7 && <4.8,
                        vector,
-                       vector-algorithms
+                       vector-algorithms,
+                       aeson
   hs-source-dirs:      src
   ghc-options:         -Wall
   default-extensions:  NamedFieldPuns,
                        RecordWildCards,
-                       FlexibleInstances
+                       FlexibleInstances,
+                       GADTs,
+                       DataKinds,
+                       RankNTypes
   default-language:    Haskell2010

@@ -7,6 +7,7 @@ module BoundingBox
     , isEmpty
     , empty
     , extend
+    , extend'
     ) where
 
 import Coord
@@ -24,7 +25,6 @@ data BoundingBox = BoundingBox
 intersects :: BoundingBox -> BoundingBox -> Bool
 intersects b1 b2 = minmax max_x min_x && minmax max_y min_y
     where minmax p1 p2 = min (p1 b1) (p1 b2) > max (p2 b1) (p2 b2)
-
 
 intersection :: BoundingBox -> BoundingBox -> BoundingBox
 intersection b1 b2 = let
