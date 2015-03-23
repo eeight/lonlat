@@ -29,49 +29,50 @@ min_node_fill = 3
 
 data Nat = Zero | Succ Nat
 
-data Cell m where
-    LeafCell :: Point -> Int32 -> Cell Zero
-    InnerCell :: BoundingBox -> Node m -> Cell (Succ m)
-
 data Node m where
-    LeafNode :: V.Vector (Cell Zero) -> Node Zero
-    InnerNode :: V.Vector (Cell (Succ m)) -> Node (Succ m)
+    Leaf :: Point -> Int32 -> Node Zero
+    Inner :: BoundingBox -> V.Vector (Node m) -> Node (Succ m)
 
-data MaybeNodePair m = MaybeNodePair (Node m) (Maybe (Node m))
+data Rtree = forall m . T (Maybe (Node m))
 
-data Rtree  = forall m . Rtree BoundingBox (Node m)
+data Context m n where
+    Root :: Context n n
+    Hole :: Int -> V.Vector (Node n) -> Context m (Succ n) -> Context m n
 
-instance ToJSON (Cell m) where
-    toJSON (LeafCell p i) = object ["point" .= p, "id" .= i]
-    toJSON (InnerCell b n) = object ["bbox" .= b, "node" .= n]
+data Zipper m n = Zipper (Node n) (Context m n)
 
 instance ToJSON (Node m) where
-    toJSON = toJSON . nodeCells
-
-instance Contained (Cell m) where
-    bbox (LeafCell p _) = bbox p
-    bbox (InnerCell b _) = b
-
-instance Contained (Node m) where
-    bbox = bbox . nodeCells
-
-instance Contained Rtree where
-    bbox (Rtree b _) = b
+    toJSON (Leaf p i) = object ["point" .= p, "id" .= i]
+    toJSON (Inner box ns) = object ["bbox" .= box, "children" .= ns]
 
 instance ToJSON Rtree where
-    toJSON (Rtree b root) = object ["bbox" .= b, "root" .= root]
+    toJSON (T x) = maybe (object []) toJSON x
 
-nodeCells :: Node m -> V.Vector (Cell m)
-nodeCells (LeafNode v) = v
-nodeCells (InnerNode v) = v
+instance Contained (Node m) where
+    bbox (Leaf p _) = bbox p
+    bbox (Inner b _) = b
 
-mkNode :: V.Vector (Cell m) -> Node m
-mkNode cells = case V.head cells of
-    InnerCell _ _ -> InnerNode cells
-    LeafCell _ _ -> LeafNode cells
+instance Contained Rtree where
+    bbox (T x) = maybe B.empty bbox x
 
-mkInner :: Node m -> Cell (Succ m)
-mkInner c = InnerCell (bbox c) c
+mkZipper :: Node m -> Zipper m m
+mkZipper = flip Zipper Root
+
+zipUp :: Zipper m n -> Node m
+zipUp (Zipper c Root) = c
+zipUp (Zipper n (Hole index ns ctx)) = let
+    ns' = ns // [(index, n)]
+    b = bbox ns'
+    in zipUp $ Zipper (Inner b ns') ctx
+
+unzipTo :: Zipper m n -> BoundingBox -> Zipper m Zero
+unzipTo z@(Zipper (Leaf _ _) _) _ = z
+unzipTo (Zipper (Inner _ ns) c) box = let
+    k = chooseSubtree ns box
+    in unzipTo (Zipper (ns ! k) (Hole k ns c)) box
+
+mkInner :: V.Vector (Node n) -> Node (Succ n)
+mkInner nodes = Inner (bbox nodes) nodes
 
 margin :: BoundingBox -> Int64
 margin b = i max_x - i min_x + i max_y - i min_y where
@@ -81,16 +82,42 @@ area :: BoundingBox -> Int64
 area b = (i max_x - i min_x)*(i max_y - i min_y) where
     i = fromIntegral . unwrapCoord . ($ b)
 
-splits :: V.Vector (Cell m) -> [(Int, BoundingBox, BoundingBox)]
-splits cells = let
-    lhs_bboxes = drop min_node_fill $ scanl B.extend' B.empty $ V.toList cells
-    rhs_bboxes_vec = V.scanr B.extend' B.empty cells
+compareOn :: Ord b => (a -> b) -> a -> a -> Ordering
+compareOn f x y = (f x) `compare` (f y)
+
+depth :: Node m -> Nat
+depth (Leaf _ _) = Zero
+depth (Inner _ ns) = Succ $ depth (V.head ns)
+
+chooseSubtree :: V.Vector (Node m) -> BoundingBox -> Int
+chooseSubtree nodes box = let
+    nodeOverlap b index = V.ifoldr f 0 nodes where
+        f i n acc
+            | index == i = acc
+            | otherwise = acc + area (B.intersection b (bbox n))
+
+    metric :: Int -> BoundingBox -> Int64
+    metric = case depth (V.head nodes) of
+        Zero -> \_ _ -> 0
+        (Succ Zero) -> \k b ->
+            nodeOverlap (B.extend box b) k - nodeOverlap b k
+        _ -> \_ b -> area (B.extend box b) - area b
+
+    nodeMetric :: Int -> Int64
+    nodeMetric k = metric k (bbox $ nodes ! k)
+
+    in minimumBy (compareOn nodeMetric) [0..V.length nodes - 1]
+
+splits :: V.Vector (Node m) -> [(Int, BoundingBox, BoundingBox)]
+splits nodes = let
+    lhs_bboxes = drop min_node_fill $ scanl B.extend' B.empty $ V.toList nodes
+    rhs_bboxes_vec = V.scanr B.extend' B.empty nodes
     rhs_bboxes = drop min_node_fill $ V.toList $ V.reverse rhs_bboxes_vec
     end = max_node_fill + 1 - min_node_fill
     in zip3 [min_node_fill..end] lhs_bboxes rhs_bboxes
 
-chooseSplitAxis :: V.Vector (Cell m) -> V.Vector (Cell m)
-chooseSplitAxis cells = let
+chooseSplitAxis :: V.Vector (Node m) -> V.Vector (Node m)
+chooseSplitAxis nodes = let
     mkKey f g c = let b = bbox c in
         (unwrapCoord $ f b, unwrapCoord $ g b)
     keyX = mkKey min_x max_x
@@ -104,90 +131,44 @@ chooseSplitAxis cells = let
         VI.sortBy (compareOn key) vm
         V.freeze vm
 
-    cells'x = sortBy keyX cells
-    margin'x = marginForSplits cells'x
+    nodes'x = sortBy keyX nodes
+    margin'x = marginForSplits nodes'x
 
-    cells'y = sortBy keyY cells
-    margin'y = marginForSplits cells'y
-    in if margin'x < margin'y then cells'x else cells'y
+    nodes'y = sortBy keyY nodes
+    margin'y = marginForSplits nodes'y
+    in if margin'x < margin'y then nodes'x else nodes'y
 
-splitCells :: V.Vector (Cell m) -> (Node m, Node m)
-splitCells cells = let
-    cells' = chooseSplitAxis cells
-    (k, _, _) = minimumBy (compareOn f) (splits cells') where
+splitNodes :: V.Vector (Node m) -> (Node (Succ m), Node (Succ m))
+splitNodes nodes = let
+    nodes' = chooseSplitAxis nodes
+    (k, _, _) = minimumBy (compareOn f) (splits nodes') where
         f (_, lhs, rhs) = (
             area (B.intersection lhs rhs), area (B.extend lhs rhs))
-    (lhs, rhs) = V.splitAt k cells'
-    in (mkNode lhs, mkNode rhs)
-
-insertAt :: Node m -> Cell m -> MaybeNodePair m
-insertAt n c = let
-    cells' = V.snoc (nodeCells n) c
-    in if V.length cells' <= max_node_fill
-        then MaybeNodePair (mkNode cells') Nothing
-        else let (x, y) = splitCells cells' in
-            MaybeNodePair x (Just y)
-
-compareOn :: Ord b => (a -> b) -> a -> a -> Ordering
-compareOn f x y = (f x) `compare` (f y)
-
-chooseSubtree :: Node (Succ m) -> BoundingBox -> Int
-chooseSubtree n box = let
-    cells = nodeCells n
-    cellOverlap b index = V.ifoldr f 0 cells where
-        f i c s
-            | index == i = s
-            | otherwise = s + area (B.intersection b (bbox c))
-
-    metric :: Int -> BoundingBox -> Int64
-    metric = case V.head cells of
-        InnerCell _ node ->
-            case node of
-                -- Choose the cell that needs least overlap enlargement.
-                LeafNode _ -> \k b ->
-                    cellOverlap (B.extend box b) k - cellOverlap b k
-                -- Choose the cell that needs least area enlargement.
-                InnerNode _ -> \_ b -> area (B.extend box b) - area b
-
-    cellMetric :: Int -> Int64
-    cellMetric k = case cells ! k of
-        InnerCell b _ -> metric k b
-
-    in minimumBy (compareOn cellMetric) [0..V.length cells - 1]
-
-insertInSubtree :: Node m -> Cell Zero -> MaybeNodePair m
-insertInSubtree n@(LeafNode _) c = insertAt n c
-insertInSubtree n@(InnerNode cs) c = let
-    k = chooseSubtree n (bbox c)
-    in case cs ! k of
-        InnerCell _ child_node -> let
-            MaybeNodePair new_child new_child_sibling' =
-                insertInSubtree child_node c
-            node' = InnerNode $ cs // [(k, mkInner new_child)]
-            in case new_child_sibling' of
-                Nothing -> MaybeNodePair node' Nothing
-                Just new_child_sibling ->
-                    insertAt node' (mkInner new_child_sibling)
+    (lhs, rhs) = V.splitAt k nodes'
+    in (mkInner lhs, mkInner rhs)
 
 empty :: Rtree
-empty = Rtree B.empty (LeafNode V.empty)
+empty = T Nothing
+
+insertAt :: Node n -> Node n -> Context m n -> Rtree
+insertAt n1 n2 Root = T $ Just $
+    mkInner (V.fromList [n1, n2])
+insertAt n1 n2 (Hole k nodes ctx) = let
+    nodes' = V.snoc (nodes // [(k, n1)]) n2
+    in if V.length nodes' < max_node_fill
+        then T $ Just $ zipUp $ Zipper (mkInner nodes') ctx
+        else let (m1, m2) = splitNodes nodes' in insertAt m1 m2 ctx
 
 insert :: Point -> Int32 -> Rtree -> Rtree
-insert p i (Rtree r_bbox r_root) = let
-    new_bbox' = B.extend r_bbox (bbox p)
-    new_bbox = new_bbox' `seq` new_bbox'
-    in case insertInSubtree r_root (LeafCell p i) of
-        MaybeNodePair r Nothing -> Rtree new_bbox r
-        MaybeNodePair new_root (Just new_root_sibling) ->
-            Rtree new_bbox (InnerNode $
-                V.fromList [mkInner new_root, mkInner new_root_sibling])
+insert p i (T Nothing) = T $ Just $ Leaf p i
+insert p i (T (Just n)) = case unzipTo (mkZipper n) (bbox p) of
+    Zipper leaf c -> insertAt leaf (Leaf p i) c
 
 lookup :: BoundingBox -> Rtree -> [Int32]
-lookup query_bbox (Rtree r_bbox root) = go r_bbox root where
-    go :: BoundingBox -> Node m -> [Int32]
-    go node_bbox node
+lookup _ (T Nothing) = []
+lookup query_bbox (T (Just n)) = go n where
+    go :: Node m -> [Int32]
+    go (Leaf p i) = if B.contains query_bbox p then [i] else []
+    go (Inner node_bbox ns)
         | not (B.intersects query_bbox node_bbox) = []
-        | otherwise = concatMap goCell (V.toList $ nodeCells node)
-    goCell :: Cell m -> [Int32]
-    goCell (LeafCell p i) = if B.contains query_bbox p then [i] else []
-    goCell (InnerCell node_bbox node) = go node_bbox node
+        | otherwise = concatMap go (V.toList $ ns)
