@@ -3,6 +3,7 @@ module Rtree
     , empty
     , insert
     , lookup
+    , delete
     ) where
 
 import Coord(Coord(..))
@@ -11,12 +12,12 @@ import BoundingBox(BoundingBox(..), Contained(..))
 
 import qualified BoundingBox as B
 
-import Prelude hiding (lookup)
+import Prelude hiding (lookup, (++))
 import Control.Monad.ST(runST)
 import Data.Aeson(ToJSON(..), (.=), object)
 import Data.Int(Int32, Int64)
 import Data.List(minimumBy)
-import Data.Vector((!), (//))
+import Data.Vector((!), (//), (++))
 
 import qualified Data.Vector as V
 import qualified Data.Vector.Algorithms.Intro as VI
@@ -62,14 +63,41 @@ zipUp :: Zipper m n -> Node m
 zipUp (Zipper c Root) = c
 zipUp (Zipper n (Hole index ns ctx)) = let
     ns' = ns // [(index, n)]
-    b = bbox ns'
-    in zipUp $ Zipper (Inner b ns') ctx
+    in zipUp $ Zipper (mkInner ns') ctx
 
-unzipTo :: Zipper m n -> BoundingBox -> Zipper m Zero
-unzipTo z@(Zipper (Leaf _ _) _) _ = z
-unzipTo (Zipper (Inner _ ns) c) box = let
+zipStepDown :: Int -> V.Vector (Node n) -> Context m (Succ n) -> Zipper m n
+zipStepDown k ns c = Zipper (ns ! k) (Hole k ns c)
+
+unzipToInsert :: Zipper m n -> BoundingBox -> Zipper m Zero
+unzipToInsert z@(Zipper (Leaf _ _) _) _ = z
+unzipToInsert (Zipper (Inner _ ns) c) box = let
     k = chooseSubtree ns box
-    in unzipTo (Zipper (ns ! k) (Hole k ns c)) box
+    in unzipToInsert (zipStepDown k ns c) box
+
+unzipToDelete :: Zipper m n -> Point -> Int32 -> Maybe (Zipper m Zero)
+unzipToDelete z@(Zipper (Leaf lp li) _) p i =
+    if (lp, li) == (p, i) then Just z else Nothing
+unzipToDelete (Zipper (Inner box ns) c) p i
+    | not $ B.contains box p = Nothing
+    | otherwise = msum [
+        unzipToDelete (zipStepDown k ns c) p i | k <- [0..V.length ns - 1]]
+
+data Height m where
+    Here :: Node m -> Height m
+    Below :: Height m -> Height (Succ m)
+
+deleteAt :: Context m n -> Rtree
+deleteAt c = let
+    (r, nodes) = go c []
+    in foldl' insertNode rtree nodes
+  where
+    go :: Context m n -> (Rtree, [Height m])
+    go Root acc = (T Nothing, acc)
+    go (Hole k ns ctx) acc = let
+        ns' = let (a, b) = V.splitAt k ns in a ++ V.tail b
+        in if V.length ns' < max_node_fill
+            then T $ Just $ go ctx (acc ++ V.toList ns')
+            else (T $ Just $ zipUp $ Zipper (mkInner ns') ctx, acc)
 
 mkInner :: V.Vector (Node n) -> Node (Succ n)
 mkInner nodes = Inner (bbox nodes) nodes
@@ -161,7 +189,7 @@ insertAt n1 n2 (Hole k nodes ctx) = let
 
 insert :: Point -> Int32 -> Rtree -> Rtree
 insert p i (T Nothing) = T $ Just $ Leaf p i
-insert p i (T (Just n)) = case unzipTo (mkZipper n) (bbox p) of
+insert p i (T (Just n)) = case unzipToInsert (mkZipper n) (bbox p) of
     Zipper leaf c -> insertAt leaf (Leaf p i) c
 
 lookup :: BoundingBox -> Rtree -> [Int32]
@@ -172,3 +200,9 @@ lookup query_bbox (T (Just n)) = go n where
     go (Inner node_bbox ns)
         | not (B.intersects query_bbox node_bbox) = []
         | otherwise = concatMap go (V.toList $ ns)
+
+delete :: Point -> Int32 -> Rtree -> Rtree
+delete _ _ r@(T Nothing) = r
+delete p i r@(T (Just n)) = case unzipToDelete (mkZipper n) p i of
+    Just (Zipper (Leaf _ i') c) -> if i == i' then deleteAt c else r
+    _ -> r

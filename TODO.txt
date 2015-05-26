@@ -1,0 +1,4 @@
+deletion
+    node underflow
+insertion
+    adaptive re-insert

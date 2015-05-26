@@ -9,6 +9,7 @@ import qualified Rtree as R
 
 import Data.List(foldl', sort)
 import Data.Vector((!))
+import Data.Int(Int32)
 import System.Random(mkStdGen, Random(..))
 import Test.Hspec
 
@@ -38,23 +39,33 @@ oneElement = it "with one element has this element" $ do
 randomPoints :: Int -> Int -> [Point]
 randomPoints seed n = let
     stream = randomRs (-1000, 1000) (mkStdGen seed)
-    xs = take n stream
-    ys = take n $ drop n stream
+    (xs, stream') = splitAt n stream
+    ys = take n stream'
     mkPoint x y = Point (Coord x) (Coord y)
     in zipWith mkPoint xs ys
+
+mkTest :: [Point] -> [Int32] -> R.Rtree -> IO ()
+mkTest ps ids r = sequence_ $ do
+        let n = length ps
+        let psv = V.fromList ps
+        i <- [0..n - 1]
+        j <- [i + 1..n - 1]
+        let box = B.extend (bbox (psv ! i)) (bbox (psv ! j))
+        let ans = filter (\i -> B.contains box (psv ! (fromIntegral i))) ids
+        return $ sort (R.lookup box r) `shouldBe` ans
 
 mkRandomTest :: Int -> Int -> IO ()
 mkRandomTest seed n = let
     ps = randomPoints seed n
     ids = [0..fromIntegral n - 1]
     r = foldl' (\r (p, i) -> R.insert p i r) R.empty $ zip ps ids
-    psv = V.fromList ps
-    in sequence_ $ do
-        i <- [0..n - 1]
-        j <- [i + 1..n - 1]
-        let box = B.extend (bbox (psv ! i)) (bbox (psv ! j))
-        let ans = filter (\i -> B.contains box (psv ! (fromIntegral i))) ids
-        return $ sort (R.lookup box r) `shouldBe` ans
+
+    n2 = n `div` 2
+    (psToDelete, ps') = splitAt n2 ps
+    (idsToDelete, ids') = splitAt n2 ids
+    r' = foldl' (\r (p, i) -> R.delete p i r) r $ zip psToDelete idsToDelete
+
+    in mkTest ps ids r >> mkTest ps' ids' r'
 
 randomSmall :: SpecWith ()
 randomSmall = it "small random one works" (mkRandomTest 1 4)
@@ -65,6 +76,9 @@ randomMid = it "mid random one works" (mkRandomTest 1 10)
 randomBig :: SpecWith ()
 randomBig = it "big random one works" (mkRandomTest 1 100)
 
+randomHuge :: SpecWith ()
+randomHuge = it "big random one works" (mkRandomTest 1 1000)
+
 main :: IO ()
 main = hspec $ do
     describe "Rtree" $ do
@@ -73,3 +87,4 @@ main = hspec $ do
         randomSmall
         randomMid
         randomBig
+        --randomHuge
