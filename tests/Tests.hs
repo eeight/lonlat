@@ -48,10 +48,11 @@ mkTest :: [Point] -> [Int32] -> R.Rtree -> IO ()
 mkTest ps ids r = sequence_ $ do
         let n = length ps
         let psv = V.fromList ps
+        let idsv = V.fromList ids
         i <- [0..n - 1]
         j <- [i + 1..n - 1]
         let box = B.extend (bbox (psv ! i)) (bbox (psv ! j))
-        let ans = filter (\i -> B.contains box (psv ! (fromIntegral i))) ids
+        let ans = [idsv ! k | k <- [0..n - 1], B.contains box (psv ! k)]
         return $ sort (R.lookup box r) `shouldBe` ans
 
 mkRandomTest :: Int -> Int -> IO ()

@@ -1,3 +1,4 @@
+{-# LANGUAGE KindSignatures #-}
 module Rtree
     ( Rtree
     , empty
@@ -12,49 +13,59 @@ import BoundingBox(BoundingBox(..), Contained(..))
 
 import qualified BoundingBox as B
 
-import Prelude hiding (lookup, (++))
+import Prelude hiding (lookup)
 import Control.Monad.ST(runST)
 import Data.Aeson(ToJSON(..), (.=), object)
 import Data.Int(Int32, Int64)
-import Data.List(minimumBy)
-import Data.Vector((!), (//), (++))
+import Data.List(minimumBy, foldl')
+import Data.Monoid(First(..))
+import Data.Vector((!), (//))
+import Unsafe.Coerce(unsafeCoerce)
 
 import qualified Data.Vector as V
 import qualified Data.Vector.Algorithms.Intro as VI
 
-max_node_fill :: Int
-max_node_fill = 9
+maxNodeFill :: Int
+maxNodeFill = 9
 
-min_node_fill :: Int
-min_node_fill = 3
+minNodeFill :: Int
+minNodeFill = 3
 
 data Nat = Zero | Succ Nat
 
 data Node m where
-    Leaf :: Point -> Int32 -> Node Zero
-    Inner :: BoundingBox -> V.Vector (Node m) -> Node (Succ m)
+    Leaf :: Point -> Int32 -> Node 'Zero
+    Inner :: Int -> BoundingBox -> V.Vector (Node m) -> Node ('Succ m)
 
+data AnyNode = forall m . AnyNode (Node m)
 data Rtree = forall m . T (Maybe (Node m))
 
 data Context m n where
     Root :: Context n n
-    Hole :: Int -> V.Vector (Node n) -> Context m (Succ n) -> Context m n
+    Hole :: Int -> V.Vector (Node n) -> Context m ('Succ n) -> Context m n
 
 data Zipper m n = Zipper (Node n) (Context m n)
 
+data AnyZipper :: Nat -> * where
+    AnyZipper :: Zipper m n -> AnyZipper m
+
 instance ToJSON (Node m) where
     toJSON (Leaf p i) = object ["point" .= p, "id" .= i]
-    toJSON (Inner box ns) = object ["bbox" .= box, "children" .= ns]
+    toJSON (Inner _ box ns) = object ["bbox" .= box, "children" .= ns]
 
 instance ToJSON Rtree where
     toJSON (T x) = maybe (object []) toJSON x
 
 instance Contained (Node m) where
     bbox (Leaf p _) = bbox p
-    bbox (Inner b _) = b
+    bbox (Inner _ b _) = b
 
 instance Contained Rtree where
     bbox (T x) = maybe B.empty bbox x
+
+height :: Node m -> Int
+height Leaf{} = 0
+height (Inner n _ _) = n
 
 mkZipper :: Node m -> Zipper m m
 mkZipper = flip Zipper Root
@@ -65,42 +76,54 @@ zipUp (Zipper n (Hole index ns ctx)) = let
     ns' = ns // [(index, n)]
     in zipUp $ Zipper (mkInner ns') ctx
 
-zipStepDown :: Int -> V.Vector (Node n) -> Context m (Succ n) -> Zipper m n
+zipStepDown :: Int -> V.Vector (Node n) -> Context m ('Succ n) -> Zipper m n
 zipStepDown k ns c = Zipper (ns ! k) (Hole k ns c)
 
-unzipToInsert :: Zipper m n -> BoundingBox -> Zipper m Zero
+unzipToInsert :: Zipper m n -> BoundingBox -> Zipper m 'Zero
 unzipToInsert z@(Zipper (Leaf _ _) _) _ = z
-unzipToInsert (Zipper (Inner _ ns) c) box = let
+unzipToInsert (Zipper (Inner _ _ ns) c) box = let
     k = chooseSubtree ns box
     in unzipToInsert (zipStepDown k ns c) box
 
-unzipToDelete :: Zipper m n -> Point -> Int32 -> Maybe (Zipper m Zero)
+unzipToDelete :: Zipper m n -> Point -> Int32 -> Maybe (Zipper m 'Zero)
 unzipToDelete z@(Zipper (Leaf lp li) _) p i =
     if (lp, li) == (p, i) then Just z else Nothing
-unzipToDelete (Zipper (Inner box ns) c) p i
+unzipToDelete (Zipper (Inner _ box ns) c) p i
     | not $ B.contains box p = Nothing
-    | otherwise = msum [
-        unzipToDelete (zipStepDown k ns c) p i | k <- [0..V.length ns - 1]]
-
-data Height m where
-    Here :: Node m -> Height m
-    Below :: Height m -> Height (Succ m)
+    | otherwise = getFirst $ mconcat [
+        First $ unzipToDelete (zipStepDown k ns c) p i | k <- [0..V.length ns - 1]]
 
 deleteAt :: Context m n -> Rtree
 deleteAt c = let
-    (r, nodes) = go c []
-    in foldl' insertNode rtree nodes
+    (r, excessNodes) = deleteAtAcc c []
+    in foldl' insertAnyNode r excessNodes
   where
-    go :: Context m n -> (Rtree, [Height m])
-    go Root acc = (T Nothing, acc)
-    go (Hole k ns ctx) acc = let
-        ns' = let (a, b) = V.splitAt k ns in a ++ V.tail b
-        in if V.length ns' < max_node_fill
-            then T $ Just $ go ctx (acc ++ V.toList ns')
+    deleteAtAcc :: Context m n -> [AnyNode] -> (Rtree, [AnyNode])
+    deleteAtAcc Root acc = (T Nothing, acc)
+    deleteAtAcc (Hole k ns ctx) acc = let
+        ns' = let (a, b) = V.splitAt k ns in (V.++) a (V.tail b)
+        in if V.length ns' < maxNodeFill
+            then deleteAtAcc ctx (acc ++ map AnyNode (V.toList ns'))
             else (T $ Just $ zipUp $ Zipper (mkInner ns') ctx, acc)
 
-mkInner :: V.Vector (Node n) -> Node (Succ n)
-mkInner nodes = Inner (bbox nodes) nodes
+    coerceHeight :: Node a -> Node b
+    coerceHeight = unsafeCoerce
+
+    insertAnyNode :: Rtree -> AnyNode -> Rtree
+    insertAnyNode (T Nothing) n = case n of AnyNode n' -> T (Just n')
+    insertAnyNode (T (Just r)) n = case n of
+        AnyNode n' -> case unzipToInsertHeight (mkZipper r) (bbox n') (height n') of
+            AnyZipper (Zipper n2 c) -> insertAt n2 (coerceHeight n') c
+
+    unzipToInsertHeight :: Zipper m n -> BoundingBox -> Int -> AnyZipper m
+    unzipToInsertHeight z@(Zipper (Leaf{}) _) _ _ = AnyZipper z
+    unzipToInsertHeight z@(Zipper n _) _ h | height n == h = AnyZipper z
+    unzipToInsertHeight (Zipper (Inner _ _ ns) c) box h = let
+        k = chooseSubtree ns box
+        in unzipToInsertHeight (zipStepDown k ns c) box h
+
+mkInner :: V.Vector (Node n) -> Node ('Succ n)
+mkInner nodes = Inner (height (V.head nodes) + 1) (bbox nodes) nodes
 
 margin :: BoundingBox -> Int64
 margin b = i max_x - i min_x + i max_y - i min_y where
@@ -111,11 +134,7 @@ area b = (i max_x - i min_x)*(i max_y - i min_y) where
     i = fromIntegral . unwrapCoord . ($ b)
 
 compareOn :: Ord b => (a -> b) -> a -> a -> Ordering
-compareOn f x y = (f x) `compare` (f y)
-
-depth :: Node m -> Nat
-depth (Leaf _ _) = Zero
-depth (Inner _ ns) = Succ $ depth (V.head ns)
+compareOn f x y = f x `compare` f y
 
 chooseSubtree :: V.Vector (Node m) -> BoundingBox -> Int
 chooseSubtree nodes box = let
@@ -125,10 +144,9 @@ chooseSubtree nodes box = let
             | otherwise = acc + area (B.intersection b (bbox n))
 
     metric :: Int -> BoundingBox -> Int64
-    metric = case depth (V.head nodes) of
-        Zero -> \_ _ -> 0
-        (Succ Zero) -> \k b ->
-            nodeOverlap (B.extend box b) k - nodeOverlap b k
+    metric = case height (V.head nodes) of
+        0 -> \_ _ -> 0
+        1 -> \k b -> nodeOverlap (B.extend box b) k - nodeOverlap b k
         _ -> \_ b -> area (B.extend box b) - area b
 
     nodeMetric :: Int -> Int64
@@ -138,11 +156,11 @@ chooseSubtree nodes box = let
 
 splits :: V.Vector (Node m) -> [(Int, BoundingBox, BoundingBox)]
 splits nodes = let
-    lhs_bboxes = drop min_node_fill $ scanl B.extend' B.empty $ V.toList nodes
+    lhs_bboxes = drop minNodeFill $ scanl B.extend' B.empty $ V.toList nodes
     rhs_bboxes_vec = V.scanr B.extend' B.empty nodes
-    rhs_bboxes = drop min_node_fill $ V.toList $ V.reverse rhs_bboxes_vec
-    end = max_node_fill + 1 - min_node_fill
-    in zip3 [min_node_fill..end] lhs_bboxes rhs_bboxes
+    rhs_bboxes = drop minNodeFill $ V.toList $ V.reverse rhs_bboxes_vec
+    end = maxNodeFill + 1 - minNodeFill
+    in zip3 [minNodeFill..end] lhs_bboxes rhs_bboxes
 
 chooseSplitAxis :: V.Vector (Node m) -> V.Vector (Node m)
 chooseSplitAxis nodes = let
@@ -166,7 +184,7 @@ chooseSplitAxis nodes = let
     margin'y = marginForSplits nodes'y
     in if margin'x < margin'y then nodes'x else nodes'y
 
-splitNodes :: V.Vector (Node m) -> (Node (Succ m), Node (Succ m))
+splitNodes :: V.Vector (Node m) -> (Node ('Succ m), Node ('Succ m))
 splitNodes nodes = let
     nodes' = chooseSplitAxis nodes
     (k, _, _) = minimumBy (compareOn f) (splits nodes') where
@@ -183,7 +201,7 @@ insertAt n1 n2 Root = T $ Just $
     mkInner (V.fromList [n1, n2])
 insertAt n1 n2 (Hole k nodes ctx) = let
     nodes' = V.snoc (nodes // [(k, n1)]) n2
-    in if V.length nodes' < max_node_fill
+    in if V.length nodes' < maxNodeFill
         then T $ Just $ zipUp $ Zipper (mkInner nodes') ctx
         else let (m1, m2) = splitNodes nodes' in insertAt m1 m2 ctx
 
@@ -196,13 +214,13 @@ lookup :: BoundingBox -> Rtree -> [Int32]
 lookup _ (T Nothing) = []
 lookup query_bbox (T (Just n)) = go n where
     go :: Node m -> [Int32]
-    go (Leaf p i) = if B.contains query_bbox p then [i] else []
-    go (Inner node_bbox ns)
+    go (Leaf p i) = [i | B.contains query_bbox p]
+    go (Inner _ node_bbox ns)
         | not (B.intersects query_bbox node_bbox) = []
-        | otherwise = concatMap go (V.toList $ ns)
+        | otherwise = concatMap go (V.toList ns)
 
 delete :: Point -> Int32 -> Rtree -> Rtree
 delete _ _ r@(T Nothing) = r
 delete p i r@(T (Just n)) = case unzipToDelete (mkZipper n) p i of
-    Just (Zipper (Leaf _ i') c) -> if i == i' then deleteAt c else r
+    Just (Zipper (Leaf _ i') c) | i == i' ->deleteAt c
     _ -> r

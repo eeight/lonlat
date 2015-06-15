@@ -17,7 +17,7 @@ library
                        Point,
                        BoundingBox,
                        Rtree
-  build-depends:       base >=4.7 && <4.8,
+  build-depends:       base,
                        vector,
                        vector-algorithms,
                        aeson
@@ -31,7 +31,8 @@ library
                        RankNTypes,
                        OverloadedStrings,
                        DeriveGeneric,
-                       DefaultSignatures
+                       DefaultSignatures,
+                       KindSignatures
   default-language:    Haskell2010
 
 test-suite tests
@@ -41,7 +42,7 @@ test-suite tests
   hs-source-dirs:      tests
   build-depends:       base,
                        lonlat,
-                       hspec > 2.0 && < 2.1,
+                       hspec,
                        vector,
                        random
   default-language:    Haskell2010
