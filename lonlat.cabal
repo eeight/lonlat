@@ -20,7 +20,8 @@ library
   build-depends:       base,
                        vector,
                        vector-algorithms,
-                       aeson
+                       aeson,
+                       ghc-typelits-natnormalise
   hs-source-dirs:      src
   ghc-options:         -Wall
   default-extensions:  NamedFieldPuns,
@@ -32,8 +33,10 @@ library
                        OverloadedStrings,
                        DeriveGeneric,
                        DefaultSignatures,
-                       KindSignatures
+                       KindSignatures,
+                       TypeOperators
   default-language:    Haskell2010
+  ghc-options:         -fplugin GHC.TypeLits.Normalise
 
 test-suite tests
   ghc-options:         -Wall

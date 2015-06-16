@@ -1,4 +1,3 @@
-{-# LANGUAGE KindSignatures #-}
 module Rtree
     ( Rtree
     , empty
@@ -21,6 +20,7 @@ import Data.List(minimumBy, foldl')
 import Data.Monoid(First(..))
 import Data.Vector((!), (//))
 import Unsafe.Coerce(unsafeCoerce)
+import GHC.TypeLits
 
 import qualified Data.Vector as V
 import qualified Data.Vector.Algorithms.Intro as VI
@@ -31,18 +31,16 @@ maxNodeFill = 9
 minNodeFill :: Int
 minNodeFill = 3
 
-data Nat = Zero | Succ Nat
-
 data Node m where
-    Leaf :: Point -> Int32 -> Node 'Zero
-    Inner :: Int -> BoundingBox -> V.Vector (Node m) -> Node ('Succ m)
+    Leaf :: Point -> Int32 -> Node 0
+    Inner :: Int -> BoundingBox -> V.Vector (Node m) -> Node (m + 1)
 
 data AnyNode = forall m . AnyNode (Node m)
 data Rtree = forall m . T (Maybe (Node m))
 
 data Context m n where
     Root :: Context n n
-    Hole :: Int -> V.Vector (Node n) -> Context m ('Succ n) -> Context m n
+    Hole :: Int -> V.Vector (Node n) -> Context m (n + 1) -> Context m n
 
 data Zipper m n = Zipper (Node n) (Context m n)
 
@@ -76,16 +74,16 @@ zipUp (Zipper n (Hole index ns ctx)) = let
     ns' = ns // [(index, n)]
     in zipUp $ Zipper (mkInner ns') ctx
 
-zipStepDown :: Int -> V.Vector (Node n) -> Context m ('Succ n) -> Zipper m n
+zipStepDown :: Int -> V.Vector (Node n) -> Context m (n + 1) -> Zipper m n
 zipStepDown k ns c = Zipper (ns ! k) (Hole k ns c)
 
-unzipToInsert :: Zipper m n -> BoundingBox -> Zipper m 'Zero
+unzipToInsert :: Zipper m n -> BoundingBox -> Zipper m 0
 unzipToInsert z@(Zipper (Leaf _ _) _) _ = z
 unzipToInsert (Zipper (Inner _ _ ns) c) box = let
     k = chooseSubtree ns box
     in unzipToInsert (zipStepDown k ns c) box
 
-unzipToDelete :: Zipper m n -> Point -> Int32 -> Maybe (Zipper m 'Zero)
+unzipToDelete :: Zipper m n -> Point -> Int32 -> Maybe (Zipper m 0)
 unzipToDelete z@(Zipper (Leaf lp li) _) p i =
     if (lp, li) == (p, i) then Just z else Nothing
 unzipToDelete (Zipper (Inner _ box ns) c) p i
@@ -122,7 +120,7 @@ deleteAt c = let
         k = chooseSubtree ns box
         in unzipToInsertHeight (zipStepDown k ns c) box h
 
-mkInner :: V.Vector (Node n) -> Node ('Succ n)
+mkInner :: V.Vector (Node n) -> Node (n + 1)
 mkInner nodes = Inner (height (V.head nodes) + 1) (bbox nodes) nodes
 
 margin :: BoundingBox -> Int64
@@ -184,7 +182,7 @@ chooseSplitAxis nodes = let
     margin'y = marginForSplits nodes'y
     in if margin'x < margin'y then nodes'x else nodes'y
 
-splitNodes :: V.Vector (Node m) -> (Node ('Succ m), Node ('Succ m))
+splitNodes :: V.Vector (Node m) -> (Node (m + 1), Node (m + 1))
 splitNodes nodes = let
     nodes' = chooseSplitAxis nodes
     (k, _, _) = minimumBy (compareOn f) (splits nodes') where
