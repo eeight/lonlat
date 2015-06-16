@@ -12,15 +12,16 @@ import BoundingBox(BoundingBox(..), Contained(..))
 
 import qualified BoundingBox as B
 
-import Prelude hiding (lookup)
 import Control.Monad.ST(runST)
 import Data.Aeson(ToJSON(..), (.=), object)
 import Data.Int(Int32, Int64)
 import Data.List(minimumBy, foldl')
 import Data.Monoid(First(..))
+import Data.Ord(comparing)
 import Data.Vector((!), (//))
-import Unsafe.Coerce(unsafeCoerce)
 import GHC.TypeLits
+import Prelude hiding (lookup)
+import Unsafe.Coerce(unsafeCoerce)
 
 import qualified Data.Vector as V
 import qualified Data.Vector.Algorithms.Intro as VI
@@ -131,9 +132,6 @@ area :: BoundingBox -> Int64
 area b = (i max_x - i min_x)*(i max_y - i min_y) where
     i = fromIntegral . unwrapCoord . ($ b)
 
-compareOn :: Ord b => (a -> b) -> a -> a -> Ordering
-compareOn f x y = f x `compare` f y
-
 chooseSubtree :: V.Vector (Node m) -> BoundingBox -> Int
 chooseSubtree nodes box = let
     nodeOverlap b index = V.ifoldr f 0 nodes where
@@ -150,7 +148,7 @@ chooseSubtree nodes box = let
     nodeMetric :: Int -> Int64
     nodeMetric k = metric k (bbox $ nodes ! k)
 
-    in minimumBy (compareOn nodeMetric) [0..V.length nodes - 1]
+    in minimumBy (comparing nodeMetric) [0..V.length nodes - 1]
 
 splits :: V.Vector (Node m) -> [(Int, BoundingBox, BoundingBox)]
 splits nodes = let
@@ -172,7 +170,7 @@ chooseSplitAxis nodes = let
 
     sortBy key v = runST $ do
         vm <- V.thaw v
-        VI.sortBy (compareOn key) vm
+        VI.sortBy (comparing key) vm
         V.freeze vm
 
     nodes'x = sortBy keyX nodes
@@ -185,7 +183,7 @@ chooseSplitAxis nodes = let
 splitNodes :: V.Vector (Node m) -> (Node (m + 1), Node (m + 1))
 splitNodes nodes = let
     nodes' = chooseSplitAxis nodes
-    (k, _, _) = minimumBy (compareOn f) (splits nodes') where
+    (k, _, _) = minimumBy (comparing f) (splits nodes') where
         f (_, lhs, rhs) = (
             area (B.intersection lhs rhs), area (B.extend lhs rhs))
     (lhs, rhs) = V.splitAt k nodes'
